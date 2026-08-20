@@ -18,11 +18,6 @@ local workspace = require "henchman.workspace"
 
 local M = {}
 
-local function terminal_payload(message)
-  -- Bracketed paste keeps multi-line prompts together in the henchman terminal editor.
-  return "\027[200~" .. message .. "\027[201~\r"
-end
-
 local function command_string(command)
   local parts = vim.tbl_map(vim.fn.shellescape, command)
   return table.concat(parts, " ")
@@ -183,7 +178,7 @@ local function send(adapter_config, message, send_opts)
     local buffer_name = "henchman_" .. workspace.current().id
     local loaded, load_output = system_ok(
       tmux_cmd { "load-buffer", "-b", buffer_name, "-" },
-      terminal_payload(message)
+      message
     )
     if not loaded then
       notify("Could not load tmux paste buffer: " .. load_output, vim.log.levels.ERROR)
@@ -192,7 +187,9 @@ local function send(adapter_config, message, send_opts)
 
     local pasted, paste_output = system_ok(tmux_cmd {
       "paste-buffer",
-      "-d",
+      "-d", -- Delete the buffer after pasting
+      "-p", -- Add paste markers when the target enables bracketed paste
+      "-r", -- Preserve line feeds instead of replacing them with carriage returns
       "-b",
       buffer_name,
       "-t",
@@ -200,6 +197,20 @@ local function send(adapter_config, message, send_opts)
     })
     if not pasted then
       notify("Could not send to tmux henchman pane: " .. paste_output, vim.log.levels.ERROR)
+      return
+    end
+
+    -- Let tmux add bracketed-paste markers, then submit after the paste.
+    -- Supplying markers in the buffer does not work on tmux 3.7+, where
+    -- paste-buffer sanitizes control characters by default.
+    local submitted, submit_output = system_ok(tmux_cmd {
+      "send-keys",
+      "-t",
+      pane_id,
+      "Enter",
+    })
+    if not submitted then
+      notify("Could not submit to tmux henchman pane: " .. submit_output, vim.log.levels.ERROR)
       return
     end
 
